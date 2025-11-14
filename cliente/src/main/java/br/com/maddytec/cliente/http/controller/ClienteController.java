@@ -1,63 +1,70 @@
 package br.com.maddytec.cliente.http.controller;
 
-import br.com.maddytec.cliente.entity.Cliente;
-import br.com.maddytec.cliente.service.ClienteService;
 import org.modelmapper.ModelMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.List;
+import br.com.maddytec.cliente.entity.Cliente;
+import br.com.maddytec.cliente.service.ClienteService;
+import lombok.RequiredArgsConstructor;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
+@RequiredArgsConstructor
 @RestController
-@RequestMapping("/cliente")
+@RequestMapping("api/v1/cliente")
 public class ClienteController {
 
-    @Autowired
-    private ClienteService clienteService;
-
-    @Autowired
-    private ModelMapper modelMapper;
+    private final ClienteService clienteService;
+    private final ModelMapper modelMapper;
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public Cliente salvar(@RequestBody Cliente cliente){
-        return clienteService.salvar(cliente);
+    public Mono<ResponseEntity<Cliente>> salvar(@RequestBody Mono<Cliente> cliente){
+        return cliente
+                .flatMap(clienteService::salvar)
+                .map(saved -> ResponseEntity.status(HttpStatus.CREATED)
+                .body(saved));
     }
 
     @GetMapping
     @ResponseStatus(HttpStatus.OK)
-    public List<Cliente> listaCliente(){
+    public Flux<Cliente> listaCliente(){
         return clienteService.listaCliente();
     }
 
     @GetMapping("/{id}")
-    @ResponseStatus(HttpStatus.OK)
-    public Cliente buscarClientePorId(@PathVariable("id") Long id){
+    public Mono<ResponseEntity<Cliente>> buscarClientePorId(@PathVariable("id") Long id){
         return clienteService.buscarPorId(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado."));
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado.")))
+                .map(ResponseEntity::ok);
     }
 
     @DeleteMapping("/{id}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void removerCliente(@PathVariable("id") Long id){
-        clienteService.buscarPorId(id)
-                .map(cliente -> {
-                    clienteService.removerPorId(cliente.getId());
-                    return Void.TYPE;
-                }).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado."));
+    public Mono<ResponseEntity<Void>> removerCliente(@PathVariable("id") Long id){
+        return clienteService.buscarPorId(id)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado.")))
+                .flatMap(c -> clienteService.removerPorId(id)
+                        .thenReturn(ResponseEntity.noContent().build()));
     }
 
     @PutMapping("/{id}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void atualizarCliente(@PathVariable("id") Long id, @RequestBody Cliente cliente){
-        clienteService.buscarPorId(id)
-                .map(clienteBase -> {
+    public Mono<ResponseEntity<Void>> atualizarCliente(@PathVariable("id") Long id, @RequestBody Cliente cliente){
+        return clienteService.buscarPorId(id)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado.")))
+                .flatMap(clienteBase -> {
                     modelMapper.map(cliente, clienteBase);
-                    clienteService.salvar(clienteBase);
-                    return Void.TYPE;
-                }).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado."));
+                    return clienteService.salvar(clienteBase).thenReturn(ResponseEntity.noContent().build());
+                });
     }
 
 

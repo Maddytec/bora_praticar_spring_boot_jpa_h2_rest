@@ -34,3 +34,4 @@ build/
 /.mvn/
 /mvnw
 /mvnw.cmd
+cliente/.DS_Store

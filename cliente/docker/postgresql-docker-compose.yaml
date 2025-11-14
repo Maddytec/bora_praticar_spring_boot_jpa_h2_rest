@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:13
+    container_name: cliente-postgres
+    environment:
+      POSTGRES_DB: cliente
+      POSTGRES_USER: cliente
+      POSTGRES_PASSWORD: cliente
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cliente"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
