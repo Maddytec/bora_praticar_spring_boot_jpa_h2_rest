@@ -31,9 +31,9 @@ public class ClienteController {
     @PostMapping
     public Mono<ResponseEntity<Cliente>> salvar(@RequestBody Mono<Cliente> cliente){
         return cliente
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Corpo da requisição vazio.")))
                 .flatMap(clienteService::salvar)
-                .map(saved -> ResponseEntity.status(HttpStatus.CREATED)
-                .body(saved));
+                .map(saved -> ResponseEntity.status(HttpStatus.CREATED).body(saved));
     }
 
     @GetMapping
