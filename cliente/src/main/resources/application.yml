@@ -1,9 +1,9 @@
 spring:
 
   r2dbc:
-    url: r2dbc:postgresql://${R2DBC_HOST:localhost}:${R2DBC_PORT:5433}/${R2DBC_DB:cliente}
-    username: ${R2DBC_USER:cliente}
-    password: ${R2DBC_PASSWORD:cliente}
+    url: r2dbc:postgresql://localhost:5433/cliente
+    username: cliente
+    password: cliente
     pool:
       enabled: true
     initialization:
