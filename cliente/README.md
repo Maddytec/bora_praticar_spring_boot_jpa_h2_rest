@@ -1,118 +1,144 @@
-# BoraPraticar: Spring WebFlux + R2DBC com Postgres
+# BoraPraticar: Reativo vs JDBC — quem segura a bronca de 10k requisições?
 
-Este BoraPraticar mostra como inserir e consultar clientes de forma reativa usando Spring WebFlux e R2DBC com Postgres. A ideia é demonstrar eficiência em I/O concorrente, incluindo um teste com 10.000 inserções e 1.000 requisições simultâneas.
+- Objetivo: comparar, na prática, dois jeitos de salvar/consultar cliente no Postgres — reativo (Spring WebFlux + R2DBC) e clássico síncrono (Spring MVC + JDBC) — usando o mesmo teste de carga.
+- Branches do projeto:
+  - Reativo: https://github.com/Maddytec/bora_praticar_spring_boot_jpa_h2_rest/tree/reative
+  - JDBC: https://github.com/Maddytec/bora_praticar_spring_boot_jpa_h2_rest/tree/postgresql
 
-## Pré‑requisitos
-- Java 21
-- Maven
-- Docker (para Postgres)
+## O que vamos medir
+- Throughput: requisições por segundo
+- Latência p50/p95/p99: tempo de resposta sob pressão
+- Estabilidade: erros e consistência dos códigos de status
+- Comportamento de threads: reativo tende a usar poucas threads para muita I/O
 
-## Subindo o Postgres
-- Inicie o Docker e suba o banco:
+## Repository Reativo (elo com o banco)
+- `src/main/java/br/com/maddytec/cliente/repository/ClienteRepository.java`
 ```
-docker-compose -f docker/postgresql-docker-compose.yaml up -d
-```
-- O banco fica em `localhost:5433`, usuário/senha/db: `cliente`.
-- Verifique:
-```
-docker exec -i cliente-postgres psql -U cliente -d cliente -c "\dt"
-```
-
-## Variáveis de ambiente (opcional)
-Se quiser alterar credenciais/host/porta sem editar `application.yml`:
-```
-export R2DBC_HOST=localhost
-export R2DBC_PORT=5433
-export R2DBC_DB=cliente
-export R2DBC_USER=cliente
-export R2DBC_PASSWORD=cliente
+public interface ClienteRepository extends ReactiveCrudRepository<Cliente, Long> {
+}
 ```
 
-## Rodando a aplicação (porta 8081)
+## Serviço Reativo (onde o banco acontece)`
 ```
-mvn -DskipTests spring-boot:run -Dspring-boot.run.arguments=--server.port=8081
+@Service
+public class ClienteService {
+
+    private final ClienteRepository clienteRepository;
+
+    public Mono<Cliente> salvar(Cliente cliente){
+        return clienteRepository.save(cliente);
+    }
+
+    public Flux<Cliente> listaCliente(){
+        return clienteRepository.findAll();
+    }
+
+    public Mono<Cliente> buscarPorId(Long id){
+        return clienteRepository.findById(id);
+    }
+
+    public Mono<Void> removerPorId(Long id){
+        return clienteRepository.deleteById(id);
+    }
+}
+```
+## Controller Reativo (endpoints do teste)
+```
+@RestController
+@RequestMapping("api/v1/cliente")
+public class ClienteController {
+
+    private final ClienteService clienteService;
+    private final ModelMapper modelMapper;
+
+    @PostMapping
+    public Mono<ResponseEntity<Cliente>> salvar(@RequestBody Mono<Cliente> cliente){
+        return cliente
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Corpo da requisição vazio.")))
+                .flatMap(clienteService::salvar)
+                .map(saved -> ResponseEntity.status(HttpStatus.CREATED).body(saved));
+    }
+
+    @GetMapping
+    @ResponseStatus(HttpStatus.OK)
+    public Flux<Cliente> listaCliente(){
+        return clienteService.listaCliente();
+    }
+
+    @GetMapping("/{id}")
+    public Mono<ResponseEntity<Cliente>> buscarClientePorId(@PathVariable("id") Long id){
+        return clienteService.buscarPorId(id)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Cliente nao encontrado.")))
+                .map(ResponseEntity::ok);
+    }
+}
 ```
 
-## Endpoints
-- Criar cliente (POST): `http://localhost:8081/api/v1/cliente`
-```
-curl -X POST -H 'Content-Type: application/json' \
-  -d '{"nome":"Ana","email":"ana@example.com","cpf":"123"}' \
-  http://localhost:8081/api/v1/cliente
-```
-- Buscar por id (GET): `http://localhost:8081/api/v1/cliente/{id}`
-```
-curl http://localhost:8081/api/v1/cliente/1
-```
-- Listar (GET): `http://localhost:8081/api/v1/cliente`
-```
-curl http://localhost:8081/api/v1/cliente
-```
+## Setup
+- Pré‑requisitos:
+  - Java 21, Maven, Docker
+  - Ferramenta de carga (escolha uma)
+    - k6 (Windows/Linux/mac)
+    - wrk (Linux/mac)
+    - autocannon (Node, cross‑platform)
+    - hey (mac)
+- Subir Postgres:
+  - `docker-compose -f docker/postgresql-docker-compose.yaml up -d`
+  - Banco: `localhost:5433`, db/user/pass: `cliente`
+- Rodar cada branch:
+  - Reativo: `git checkout reative` e `mvn -DskipTests spring-boot:run`
+  - JDBC: `git checkout postgresql` e `mvn -DskipTests spring-boot:run`
+  - Ambas sobem em `http://localhost:8080/` com o endpoint `POST /api/v1/cliente`
 
-## Preparando o cenário
-- Limpar a tabela antes dos testes:
-```
-docker exec -i cliente-postgres psql -U cliente -d cliente -c "DELETE FROM cliente;"
-```
+## O endpoint que recebe as requisições
+- Reativo POST em `src/main/java/br/com/maddytec/cliente/http/controller/ClienteController.java:31–37`
+- Corpo esperado:
+  - `{"nome":"Maddytec 1","email":"maddytec1@test.com","cpf":"1"}`
 
-## Teste: 10.000 inserções
-- Sequencial (baseline):
+## Um comando para 10.000 requisições e 1.000 simultâneas
+- k6 (Windows/Linux/mac)
+  - Crie `k6-post.js`:
 ```
-seq 1 10000 | while read i; do \
-  curl -s -X POST -H 'Content-Type: application/json' \
-    -d "{\"nome\":\"Cliente$i\",\"email\":\"cliente$i@example.com\",\"cpf\":\"$i\"}" \
-    http://localhost:8081/api/v1/cliente > /dev/null; \
-done
+import http from 'k6/http';
+export const options = { vus: 1000, iterations: 10000 };
+export default function () {
+  const url = 'http://localhost:8080/api/v1/cliente';
+  const body = JSON.stringify({ nome: 'Maddytec 1', email: 'maddytec1@test.com', cpf: '1' });
+  const headers = { 'Content-Type': 'application/json' };
+  http.post(url, body, { headers });
+}
 ```
-- Concorrente (1.000 em paralelo, até completar 10.000):
-```
-seq 1 10000 | xargs -n1 -P 1000 -I{} \
-  curl -s -X POST -H 'Content-Type: application/json' \
-    -d '{"nome":"Cli{}","email":"cli{}@example.com","cpf":"{}"}' \
-    http://localhost:8081/api/v1/cliente > /dev/null
-```
-- Conferir total:
-```
-docker exec -i cliente-postgres psql -U cliente -d cliente -c "SELECT count(*) FROM cliente;"
-```
-
-## Teste: 1.000 requisições simultâneas
-- Listagem reativa com 1.000 conexões:
-```
-# Usando hey (instale com: brew install hey)
-hey -c 1000 -n 5000 http://localhost:8081/api/v1/cliente
-```
-- Alternativa com wrk:
-```
-# Instale: brew install wrk
-wrk -t4 -c1000 -d30s http://localhost:8081/api/v1/cliente
-```
-
-## Extra: POST com wrk
-Crie um arquivo `post.lua` (somente para teste local) com:
+  - Rodar: `k6 run k6-post.js`
+- wrk (Linux/mac)
+  - `post.lua`:
 ```
 wrk.method = "POST"
 wrk.headers["Content-Type"] = "application/json"
-wrk.body = '{"nome":"Load","email":"load@example.com","cpf":"999"}'
+wrk.body = '{"nome":"Maddytec 1","email":"maddytec1@test.com","cpf":"1"}'
 ```
-Execute:
-```
-wrk -t4 -c1000 -d30s -s post.lua http://localhost:8081/api/v1/cliente
-```
+  - Rodar: `wrk -t4 -c1000 -d30s -s post.lua http://localhost:8080/api/v1/cliente`
+- autocannon (Node)
+  - `autocannon -c 1000 -d 30 -m POST -H 'Content-Type: application/json' -b '{"nome":"Maddytec 1","email":"maddytec1@test.com","cpf":"1"}' http://localhost:8080/api/v1/cliente`
+- hey (mac)
+  - `hey -m POST -H 'Content-Type: application/json' -d '{"nome":"Maddytec 1","email":"maddytec1@test.com","cpf":"1"}' -c 1000 -n 10000 http://localhost:8080/api/v1/cliente`
 
-## Por que reativo ajuda aqui?
-- I/O não bloqueante do HTTP ao banco (WebFlux + R2DBC) permite sustentar alta concorrência com poucas threads.
-- Backpressure e operadores (`Mono`/`Flux`) evitam sobrecarga quando o ritmo de produção/consumo varia.
-- Netty (servidor) + R2DBC (driver) trabalham assíncronos, reduzindo tempo ocioso de threads e melhorando throughput.
+## Dica esperta
+- Limpe a tabela entre os testes para não misturar resultados:
+  - `docker exec -i cliente-postgres psql -U cliente -d cliente -c "DELETE FROM cliente;"`
 
-## Dicas de troubleshooting
-- Porta errada: se chamar `8080` e o app estiver em `8081`, você verá respostas vazias ou de outro processo.
-- Banco fora do ar: verifique o container e credenciais (`R2DBC_*`).
-- Tabela ausente: execute o `schema.sql` automaticamente (já habilitado) ou crie manualmente:
-```
-docker exec -i cliente-postgres psql -U cliente -d cliente -c \
-  "CREATE TABLE IF NOT EXISTS cliente (id BIGSERIAL PRIMARY KEY, nome VARCHAR(255) NOT NULL, email VARCHAR(255), cpf VARCHAR(20));"
-```
+## Como ler os resultados
+- Throughput maior: ponto para o stack que estiver no topo
+- Latências baixas e p95/p99 comportadas: stack está segurando o rojão
+- Erros zero: saúde em dia sob concorrência
+- No reativo, espere bom uso de I/O e menos threads; no JDBC, espere mais threads e possível saturação com muita concorrência
 
-# BoraPraticar
-Agora é só rodar os testes e comparar tempos de inserção e resposta sob concorrência. Publica no seu blogue e marca que este foi um BoraPraticar!
+## Resumo da brincadeira
+- Reativo (WebFlux + R2DBC): I/O não bloqueante, ótimo para cenários de muita requisição, pouca thread e bastante acesso a banco/serviços externos
+- JDBC (MVC + JDBC): simples, conhecido, robusto; mas bloqueante e pode sofrer mais com altíssima concorrência
+
+## BoraPraticar
+- O reativo não deixa seu código mais rápido — ele deixa seu servidor atender muito mais gente com o mesmo hardware.
+- Rode, compare, tire print dos resultados, compartilhe e nos marque.
+- Links:
+  - Reativo: https://github.com/Maddytec/bora_praticar_spring_boot_jpa_h2_rest/tree/reative
+  - JDBC: https://github.com/Maddytec/bora_praticar_spring_boot_jpa_h2_rest/tree/postgresql
