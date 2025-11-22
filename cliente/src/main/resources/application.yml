@@ -1,4 +1,7 @@
 spring:
+  threads:
+    virtual:
+      enabled: true
 
   datasource:
     url: jdbc:postgresql://localhost:5433/cliente
@@ -13,3 +16,5 @@ spring:
     init:
       mode: always
       schema-locations: classpath:schema.sql
+
+
